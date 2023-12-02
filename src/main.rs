@@ -5,6 +5,7 @@ use std::time::Duration;
 use sha2::{Sha256, Digest};
 use tokio::{fs, io};
 use std::collections::HashMap;
+use std::process::exit;
 
 fn help() {
     println!("Usage: ./integrity_checker <DIRECTORY>");
@@ -12,7 +13,7 @@ fn help() {
 
 async fn get_file_content(file_path: &Path) -> io::Result<Vec<u8>> {
     if file_path.is_file() {
-        Ok(fs::read(file_path)?)
+        Ok(fs::read(file_path).await?)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -22,38 +23,38 @@ async fn get_file_content(file_path: &Path) -> io::Result<Vec<u8>> {
 }
 
 async fn on_file_modified() {
-    println!("A file got tampered with !!");
+    println!("A file got tampered with!!");
+    exit(1);
 }
 
-
-async fn integrity_routine(files: &mut HashMap<String, String>, path : &Path) {
+async fn integrity_routine(files: &mut HashMap<String, String>, path: &Path) {
     let duration = Duration::from_secs(10);
+
+
     loop {
         tokio::time::sleep(duration).await;
         println!("Performing integrity check...");
 
-        if let Ok(entries) = fs::read_dir(path) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let file_path = entry.path();
-                    let file_content = get_file_content(file_path).await;
-                    let mut hasher = Sha256::new();
-                    let digest = hasher.update(file_content).finalize().to_string(); // TODO: fix the problem with the hash library
-                    println!("Hash for the file {}: {}", entry, digest);
-                    files.entry(file_path).or_insert(digest.clone());
+        let mut entries = fs::read_dir(path).await.expect("Error reading directory");
 
-                    if files.get(file_path).expect("hash digest") != digest {
-                        on_file_modified().await;
-                    }
+        while let Some(entry) = entries.next_entry().await.expect("Expecting directory") {
+            let file_path = entry.path();
+            println!("File path: {:?}", file_path);
+            let file_content = get_file_content(&file_path).await.unwrap();
+            let mut hasher = Sha256::new();
+            hasher.update(&file_content);
+            let digest = format!("{:x}", hasher.finalize());
 
+            println!("Hash for the file {}: {}", entry.path().display(), digest);
+            files
+                .entry(file_path.to_string_lossy().to_string())
+                .or_insert(digest.clone());
 
+            if files.get(file_path.to_string_lossy().as_ref()).expect("hash digest") != &digest {
+                on_file_modified().await;
 
-                }
             }
-        } else {
-            eprintln!("Error reading directory");
         }
-
     }
 }
 
@@ -66,19 +67,13 @@ async fn main() {
     match path {
         Some(path) => {
             integrity_routine(&mut files, path).await;
-        },
-
+        }
         None => {}
-
     };
 }
 
 fn parse_arguments(args: &Vec<String>) -> Option<&Path> {
     let directory: Option<&Path> = match args.len() {
-        1 => {
-            println!("I need some command to work! Use '!help' to get help");
-            None
-        },
         2 => {
             let path = Path::new(&args[1]);
             if path.exists() {
@@ -88,10 +83,11 @@ fn parse_arguments(args: &Vec<String>) -> Option<&Path> {
                 eprintln!("Path does not exist: '{}'", args[1]);
                 None
             }
-        },
-        _ => {
-            None
         }
+        _ => {
+            help();
+            None
+        },
     };
 
     directory
